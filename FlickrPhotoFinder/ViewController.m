@@ -11,17 +11,25 @@
 #import "ImageEditView.h"
 #import "PhotoCollectionViewCell.h"
 
-@interface ViewController () <UICollectionViewDelegate, UICollectionViewDataSource, NetworkServiceOutputProtocol, UISearchBarDelegate>
+@import UserNotifications;
+
+typedef NS_ENUM(NSInteger, LCTTriggerType){
+    LCTTriggerTypeInterval = 0,
+    LCTTriggerTypeDate = 1,
+    LCTTriggerTypeLocation = 2,
+};
+
+@interface ViewController () <UICollectionViewDelegate, UICollectionViewDataSource, NetworkServiceOutputProtocol,
+UISearchBarDelegate, UNUserNotificationCenterDelegate>
 
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UICollectionView *collectionView;
 @property (nonatomic, strong) ImageEditView *imageEditView;
-
 @property (nonatomic, strong) NetworkService *networkService;
-
 @property (nonatomic, strong) NSArray<Photo *> *imageData;
-
 @property (nonatomic, strong) NSString *lastSearchText;
+
+@property (nonatomic, strong) CIContext * ciContext;
 
 @end
 
@@ -30,8 +38,7 @@
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    
-    //self.imageUrls = nil;
+    [UIApplication sharedApplication].applicationIconBadgeNumber = 0;
     
     [self createUI];
 }
@@ -55,9 +62,18 @@
     [self.view addSubview:self.collectionView];
 }
 
-- (void)createMenuView
+- (void)searchPicturesByText:(NSString *)searchText
 {
-    
+    if(searchText.length > 3)
+    {
+        if(![self.lastSearchText isEqualToString: searchText])
+        {
+            self.lastSearchText = searchText;
+            [self loadPicWithSearchString: searchText];
+            
+           [self pushInitializationWithSearchText:searchText];
+        }
+    }
 }
 
 - (void)loadPicWithSearchString:(NSString *) string
@@ -66,6 +82,14 @@
     self.networkService.output = self;
     [self.networkService configureUrlSessionWithParams:nil];
     [self.networkService findFlickrPhotoWithSearchString:string];
+}
+
+- (CIContext *)ciContext
+{
+    if (_ciContext == nil) {
+        _ciContext = [CIContext contextWithOptions:nil];
+    }
+    return _ciContext;
 }
 
 # pragma mark - UICollectionViewDataSource
@@ -121,15 +145,11 @@
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar
 {
     NSString *searchText = searchBar.text;
-    if(searchText.length > 3)
-    {
-        if(![self.lastSearchText isEqualToString: searchText])
-        {
-            self.lastSearchText = searchText;
-            [self loadPicWithSearchString: searchText];
-        }
-    }
+    [self searchPicturesByText:searchText];
+    
 }
+
+#pragma mark - imageEditView handlers
 
 - (void)closeImageEditView:(ImageEditView *)view
 {
@@ -150,7 +170,7 @@
 {
     CIImage *beginImage = [CIImage imageWithData:self.imageEditView.photo.photoData];
 
-    CIContext *context = [CIContext contextWithOptions:nil];
+    CIContext *context = self.ciContext;
     CIFilter *filter = [CIFilter filterWithName:@"CISepiaTone"
                                   keysAndValues: kCIInputImageKey, beginImage,
                         @"inputIntensity", [NSNumber numberWithDouble:slider.value], nil];
@@ -162,6 +182,106 @@
     [self.imageEditView updateImage:newImage];
     CGImageRelease(cgimg);
     
+}
+
+#pragma mark - Push handlers
+
+- (void)pushInitializationWithSearchText:(NSString *)searchText
+{
+    [self addCustomActions];
+    [self sheduleLocalNotification:searchText];
+    
+}
+
+- (void)sheduleLocalNotification:(NSString *)searchText
+{
+    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+    content.title = @"Вы давно не искали картинки по слову:";
+    content.body = searchText;
+    content.sound = [UNNotificationSound defaultSound];
+    
+    content.badge = @([self giveNewBadgeNewNumber] + 1);
+    
+    content.categoryIdentifier = @"LCTReminderCategory";
+    
+    NSString *identifier = @"NotificationId";
+    
+    UNNotificationTrigger *wt = [self triggerWithType: LCTTriggerTypeInterval];
+    
+    UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:wt];
+    
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    center.delegate = self;
+    [center addNotificationRequest:request withCompletionHandler:^(NSError * _Nullable error){
+        if (error)
+        {
+            NSLog(@"ЧТо-то не так!");
+        }
+    }];
+}
+
+- (void)addCustomActions
+{
+    UNNotificationAction *checkAction = [UNNotificationAction actionWithIdentifier:@"SearchID" title:@"Искать снова"
+                                                                           options:UNNotificationActionOptionForeground];
+    
+    UNNotificationAction *deleteAction = [UNNotificationAction actionWithIdentifier:@"DeleteID" title:@"Удалить"
+                                                                            options:UNNotificationActionOptionDestructive];
+    
+    UNNotificationCategory *category = [UNNotificationCategory categoryWithIdentifier:@"LCTReminderCategory"
+                                                                              actions:@[checkAction,deleteAction]
+                                                                    intentIdentifiers:@[]
+                                                                              options:UNNotificationCategoryOptionNone];
+    
+    NSSet *categories = [NSSet setWithObject:category];
+    
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center setNotificationCategories:categories];
+}
+
+- (NSInteger)giveNewBadgeNewNumber
+{
+    return [UIApplication sharedApplication].applicationIconBadgeNumber;
+}
+
+- (UNTimeIntervalNotificationTrigger *)intervalTrigger
+{
+    return [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:20 repeats:NO];
+}
+
+- (UNCalendarNotificationTrigger *)dateTrigger
+{
+    NSDate *date = [NSDate dateWithTimeIntervalSinceNow:3600];
+    NSDateComponents *triggerDate = [[NSCalendar currentCalendar] components:NSCalendarUnitYear + NSCalendarUnitMonth + NSCalendarUnitDay + NSCalendarUnitHour + NSCalendarUnitMinute + NSCalendarUnitSecond fromDate:date];
+    
+    return [UNCalendarNotificationTrigger triggerWithDateMatchingComponents:triggerDate repeats:NO];
+}
+
+- (UNNotificationTrigger *)triggerWithType:(LCTTriggerType)triggerType
+{
+    switch (triggerType)
+    {
+        case LCTTriggerTypeInterval:
+            return [self intervalTrigger];
+        case LCTTriggerTypeDate:
+            return [self dateTrigger];
+        default:
+            break;
+    }
+    return nil;
+}
+
+#pragma mark - UNUserNotificationCenterDelegate
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response withCompletionHandler:(void (^)(void))completionHandler
+{
+    if([response.actionIdentifier isEqualToString:@"SearchID"])
+    {
+        NSString *searchText = response.notification.request.content.body;
+        self.searchBar.text = searchText;
+        [self searchPicturesByText:self.searchBar.text];
+    }
+    completionHandler();
 }
 
 @end
